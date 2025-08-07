@@ -11,15 +11,18 @@ from shapely.geometry import Point, LineString
 import copy
 import pandas as pd
 
-# ======================== ĐÃ SỬA LỖI IMPORT ========================
+# ======================== ĐÃ SỬA LỖI IMPORT (KIỂM TRA LẠI) ========================
 from stable_baselines3 import SAC
-from sb3_contrib import TQC
-# ====================================================================
+from sb3_contrib import TQC 
+# ==============================================================================
 
 from stable_baselines3.common.vec_env import DummyVecEnv
 from uav_env import UAVNetworkEnv, IOT_DATA_START
 
-# PHẦN 1: CÁC HÀM ĐÁNH GIÁ (giữ nguyên)
+# ==============================================================================
+# PHẦN 1: CÁC HÀM ĐÁNH GIÁ (LOGIC ĐÃ SỬA LỖI)
+# ==============================================================================
+
 def run_single_episode_rl(model_path, algorithm_class, initial_state):
     def make_env():
         env = UAVNetworkEnv(num_uavs=2, num_iot_nodes=15)
@@ -27,19 +30,37 @@ def run_single_episode_rl(model_path, algorithm_class, initial_state):
         env.iot_nodes = copy.deepcopy(initial_state['iot_nodes'])
         env.no_fly_zones = copy.deepcopy(initial_state['no_fly_zones'])
         return env
+
     eval_env = DummyVecEnv([make_env])
     model = algorithm_class.load(model_path, env=eval_env, device='cpu')
+    
     obs = eval_env.reset()
     done, episode_reward = False, 0
     trajectories = [[(u['x'], u['y'])] for u in initial_state['uavs']]
+    
+    data_collected = 0
+    
     while not done:
         action, _ = model.predict(obs, deterministic=True)
         obs, reward, done_vec, info_vec = eval_env.step(action)
         episode_reward += reward[0]; done = done_vec[0]
-        for i, pos in enumerate(info_vec[0]['uav_positions']):
+        
+        info = info_vec[0]
+        for i, pos in enumerate(info['uav_positions']):
             trajectories[i].append(pos)
-    final_data_left = sum(iot['data'] for iot in eval_env.get_attr('iot_nodes')[0])
-    data_collected = (eval_env.get_attr('num_iot_nodes')[0] * IOT_DATA_START) - final_data_left
+        
+        if done:
+            # final_info is available from info dictionary when an episode terminates
+            final_info = info.get('final_info')
+            if final_info is not None:
+                final_data_left = final_info.get('iot_data_left', sum(iot['data'] for iot in eval_env.get_attr('iot_nodes')[0]))
+                data_collected = (eval_env.get_attr('num_iot_nodes')[0] * IOT_DATA_START) - final_data_left
+
+    # Fallback if final_info is not available (e.g., truncated)
+    if data_collected == 0:
+        final_data_left = sum(iot['data'] for iot in eval_env.get_attr('iot_nodes')[0])
+        data_collected = (eval_env.get_attr('num_iot_nodes')[0] * IOT_DATA_START) - final_data_left
+        
     trajectory_data = {'trajectories': trajectories, 'iot_pos': [(n['x'], n['y']) for n in initial_state['iot_nodes']], 'nfz': initial_state['no_fly_zones']}
     return episode_reward, data_collected, trajectory_data
 
@@ -49,8 +70,10 @@ def run_single_episode_baseline(policy_function, initial_state):
     env.iot_nodes = copy.deepcopy(initial_state['iot_nodes'])
     env.no_fly_zones = copy.deepcopy(initial_state['no_fly_zones'])
     obs, info = env.reset()
+    
     done, episode_reward = False, 0
     trajectories = [[(u['x'], u['y'])] for u in initial_state['uavs']]
+
     while not done:
         action = policy_function(env)
         obs, reward, terminated, truncated, info = env.step(action)
@@ -58,17 +81,24 @@ def run_single_episode_baseline(policy_function, initial_state):
         episode_reward += reward
         for i, pos in enumerate(info['uav_positions']):
             trajectories[i].append(pos)
+            
     final_data_left = sum(iot['data'] for iot in env.iot_nodes)
     data_collected = (env.num_iot_nodes * IOT_DATA_START) - final_data_left
     trajectory_data = {'trajectories': trajectories, 'iot_pos': [(n['x'], n['y']) for n in initial_state['iot_nodes']], 'nfz': initial_state['no_fly_zones']}
     return episode_reward, data_collected, trajectory_data
 
-# PHẦN 2: CÁC HÀM HỖ TRỢ (giữ nguyên)
+
+# ==============================================================================
+# PHẦN 2: CÁC HÀM HỖ TRỢ
+# ==============================================================================
+
 def find_latest_model(algo_name_prefix):
     try:
-        models_dir = 'models'; algo_dirs = [d for d in os.listdir(models_dir) if d.startswith(algo_name_prefix.upper())]
+        models_dir = 'models'
+        algo_dirs = [d for d in os.listdir(models_dir) if d.startswith(algo_name_prefix.upper())]
         if not algo_dirs: return None
-        algo_dirs.sort(); latest_dir = algo_dirs[-1]; latest_dir_path = os.path.join(models_dir, latest_dir)
+        algo_dirs.sort(); latest_dir = algo_dirs[-1]
+        latest_dir_path = os.path.join(models_dir, latest_dir)
         model_files = [f for f in os.listdir(latest_dir_path) if f.endswith('.zip')]
         if not model_files: return None
         model_files.sort(key=lambda x: int(re.search(r'_(\d+)_steps', x).group(1)) if '_steps' in x else float('inf'))
@@ -110,15 +140,20 @@ def pathfinding_greedy_policy(env: UAVNetworkEnv):
 
 def random_policy(env: UAVNetworkEnv): return env.action_space.sample()
 
-# PHẦN 3: CHẠY THỰC NGHIỆM CHÍNH (giữ nguyên)
+# ==============================================================================
+# PHẦN 3: CHẠY THỰC NGHIỆM CHÍNH
+# ==============================================================================
 if __name__ == '__main__':
     NUM_TOTAL_RUNS = 3
     NUM_EPISODES_PER_RUN = 5
+    
     all_results = []
+
     rl_models_to_evaluate = {}
     tqc_path = find_latest_model("TQC"); sac_path = find_latest_model("SAC")
     if tqc_path: rl_models_to_evaluate['TQC'] = (tqc_path, TQC)
     if sac_path: rl_models_to_evaluate['SAC'] = (sac_path, SAC)
+
     baselines_to_evaluate = {'Random': random_policy, 'Pathfinding_Greedy': pathfinding_greedy_policy}
 
     for run_idx in range(NUM_TOTAL_RUNS):
@@ -154,12 +189,17 @@ if __name__ == '__main__':
     print("\n\n" + "="*80)
     print("--- BẢNG TỔNG KẾT THÍ NGHIỆM CUỐI CÙNG (TRUNG BÌNH QUA CÁC LẦN CHẠY) ---")
     print("="*80)
+    
     df = pd.DataFrame(all_results)
     summary = df.groupby('policy').agg(
-        avg_reward=('reward', 'mean'), std_reward=('reward', 'std'),
-        avg_data=('data', 'mean'), std_data=('data', 'std')
+        avg_reward=('reward', 'mean'),
+        std_reward=('reward', 'std'),
+        avg_data=('data', 'mean'),
+        std_data=('data', 'std')
     ).sort_values(by='avg_reward', ascending=False)
+
     summary['data_percent'] = (summary['avg_data'] / (15 * IOT_DATA_START)) * 100
+
     print(f"{'Policy':<25} | {'Avg Reward (± std)':<25} | {'Avg Data Collected (%)':<30}")
     print("-" * 90)
     for name, row in summary.iterrows():
