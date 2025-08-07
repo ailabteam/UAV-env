@@ -1,4 +1,4 @@
-# evaluate_baselines.py (Phiên bản cuối cùng)
+# evaluate_baselines.py (Phiên bản sửa lỗi)
 
 import os
 import numpy as np
@@ -16,7 +16,6 @@ def run_evaluation(policy_name, policy_function, num_episodes=5):
     
     total_rewards, total_data_collected = [], []
     for episode in range(num_episodes):
-        # Sử dụng seed tuần tự để so sánh công bằng với các agent RL
         obs, info = env.reset(seed=episode)
         
         done, episode_reward = False, 0
@@ -45,7 +44,6 @@ def run_evaluation(policy_name, policy_function, num_episodes=5):
 
 def pathfinding_greedy_policy(env: UAVNetworkEnv):
     actions = []
-    # Chuyển đổi vùng cấm sang đối tượng shapely để kiểm tra giao cắt
     zones_shapely = [Point(z['center']).buffer(z['radius']) for z in env.no_fly_zones]
 
     for i in range(env.num_uavs):
@@ -67,7 +65,6 @@ def pathfinding_greedy_policy(env: UAVNetworkEnv):
             
             direction_vector = np.array([best_target['x'] - uav['x'], best_target['y'] - uav['y']])
             if is_path_blocked:
-                # Heuristic né: xoay vector hướng 90 độ
                 direction_vector = np.array([-direction_vector[1], direction_vector[0]])
             
             norm = np.linalg.norm(direction_vector)
@@ -80,7 +77,6 @@ def random_policy(env: UAVNetworkEnv):
     return env.action_space.sample()
 
 def plot_trajectory(trajectories, iot_positions, no_fly_zones, policy_name):
-    # Hàm này không cần thay đổi nhiều, đã tốt
     fig, ax = plt.subplots(figsize=(12, 12))
     for i, zone in enumerate(no_fly_zones):
         ax.add_patch(Circle(zone['center'], zone['radius'], color='red', alpha=0.3, label='No-Fly Zone' if i == 0 else ""))
@@ -95,15 +91,19 @@ def plot_trajectory(trajectories, iot_positions, no_fly_zones, policy_name):
     print(f"Đã lưu biểu đồ quỹ đạo tại: {fig_path}")
 
 if __name__ == '__main__':
+    # ======================== SỬA LỖI Ở ĐÂY ========================
+    # Định nghĩa biến num_eval_episodes
     NUM_EVAL_EPISODES = 5
+    # =============================================================
+    
     results = {}
     
-    results['Pathfinding_Greedy'] = run_evaluation("Pathfinding_Greedy", pathfinding_greedy_policy, num_eval_episodes)
-    results['Random'] = run_evaluation("Random", random_policy, num_eval_episodes)
+    results['Pathfinding_Greedy'] = run_evaluation("Pathfinding_Greedy", pathfinding_greedy_policy, NUM_EVAL_EPISODES)
+    results['Random'] = run_evaluation("Random", random_policy, NUM_EVAL_EPISODES)
     
     print("\n\n--- BẢNG TỔNG KẾT SO SÁNH BASELINES ---")
     print(f"{'Policy':<25} | {'Avg Reward':<15} | {'Avg Data Collected':<20}")
     print("-" * 65)
     for name, (reward, data) in results.items():
-        print(f"{name:<25} | {reward:<15.2f} | {data:<20.f}")
+        print(f"{name:<25} | {reward:<15.2f} | {data:<20.2f}")
     print("-" * 65)
