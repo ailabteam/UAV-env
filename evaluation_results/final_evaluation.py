@@ -15,7 +15,12 @@ from sb3_contrib import TQC
 from stable_baselines3.common.vec_env import DummyVecEnv, VecEnv
 from uav_env import UAVNetworkEnv, IOT_DATA_START
 
-# PHẦN 1: CÁC HÀM ĐÁNH GIÁ
+# ==================== LƯU Ý QUAN TRỌNG ====================
+# File này sẽ chạy đánh giá trên môi trường v7
+# Hãy chắc chắn file uav_env.py của bạn là phiên bản v7
+# ==========================================================
+
+# PHẦN 1: CÁC HÀM ĐÁNH GIÁ ĐÃ ĐƯỢC ĐỒNG BỘ HÓA
 def evaluate_rl_agent(model_path, algorithm_class, seeds, num_episodes=5):
     algo_name = algorithm_class.__name__
     print(f"\n--- Bắt đầu Đánh giá: {algo_name} Agent ---")
@@ -31,30 +36,28 @@ def evaluate_rl_agent(model_path, algorithm_class, seeds, num_episodes=5):
 
     rewards, data = [], []
     for i in range(num_episodes):
+        # ======================== THAY ĐỔI: ĐỒNG BỘ SEED ========================
+        # VecEnv.seed() sẽ đặt seed cho tất cả các môi trường con
         eval_env.seed(seeds[i])
         obs = eval_env.reset()
+        # =======================================================================
         
-        # Lấy thông tin cần thiết trực tiếp từ các thuộc tính
-        num_uavs = eval_env.get_attr('num_uavs')[0]
-        iot_nodes = eval_env.get_attr('iot_nodes')[0]
-        uavs = eval_env.get_attr('uavs')[0]
-        no_fly_zones = eval_env.get_attr('no_fly_zones')[0]
-        iot_positions = [(n['x'], n['y']) for n in iot_nodes]
-        trajectories = [[(u['x'], u['y'])] for u in uavs]
-        
+        info_vec = eval_env.get_attr("info")
         done, episode_reward = False, 0
+        iot_positions = [(n['x'], n['y']) for n in eval_env.get_attr('iot_nodes')[0]]
+        no_fly_zones = info_vec[0]['no_fly_zones']
+        trajectories = [[pos] for pos in info_vec[0]['uav_positions']]
         
         while not done:
             action, _ = model.predict(obs, deterministic=True)
             obs, reward, done_vec, info_vec = eval_env.step(action)
             episode_reward += reward[0]; done = done_vec[0]
-            info = info_vec[0]
-            for j, pos in enumerate(info['uav_positions']):
+            for j, pos in enumerate(info_vec[0]['uav_positions']):
                 trajectories[j].append(pos)
         
-        final_data_left = sum(iot['data'] for iot in eval_env.get_attr('iot_nodes')[0])
+        info = info_vec[0]
         rewards.append(episode_reward)
-        data.append((eval_env.get_attr('num_iot_nodes')[0] * IOT_DATA_START) - final_data_left)
+        data.append((eval_env.get_attr('num_iot_nodes')[0] * IOT_DATA_START) - info['data_left'])
     
     avg_reward, avg_data = np.mean(rewards), np.mean(data)
     print(f"-> Kết quả {algo_name}: Reward={avg_reward:.2f}, Data Collected={avg_data:.2f}")
@@ -67,7 +70,9 @@ def evaluate_baseline(policy_name, policy_function, seeds, num_episodes=5):
     
     rewards, data = [], []
     for i in range(num_episodes):
+        # ======================== THAY ĐỔI: ĐỒNG BỘ SEED ========================
         obs, info = env.reset(seed=seeds[i])
+        # =======================================================================
         
         done, episode_reward = False, 0
         iot_positions = [(n['x'], n['y']) for n in env.iot_nodes]
@@ -82,9 +87,8 @@ def evaluate_baseline(policy_name, policy_function, seeds, num_episodes=5):
             for j, pos in enumerate(info['uav_positions']):
                 trajectories[j].append(pos)
         
-        final_data_left = sum(iot['data'] for iot in env.iot_nodes)
         rewards.append(episode_reward)
-        data.append((env.num_iot_nodes * IOT_DATA_START) - final_data_left)
+        data.append((env.num_iot_nodes * IOT_DATA_START) - info['data_left'])
 
     avg_reward, avg_data = np.mean(rewards), np.mean(data)
     print(f"-> Kết quả {policy_name}: Reward={avg_reward:.2f}, Data Collected={avg_data:.2f}")
@@ -142,35 +146,35 @@ def random_policy(env: UAVNetworkEnv): return env.action_space.sample()
 
 # PHẦN 3: CHẠY THỰC NGHIỆM
 if __name__ == '__main__':
-    try:
-        from uav_env import UAVNetworkEnv, IOT_DATA_START
-    except ImportError:
-        print("Cảnh báo: Không tìm thấy 'uav_env.py'.")
-        exit()
-
     NUM_EPISODES = 5
+    # Tạo một list các seed cố định để tất cả các phương pháp đều chạy trên cùng kịch bản
     EVALUATION_SEEDS = [i for i in range(NUM_EPISODES)]
     
     results = {}
 
+    # Chạy các baseline với cùng list seed
     results['Random'] = evaluate_baseline("Random", random_policy, EVALUATION_SEEDS, NUM_EPISODES)
     results['Pathfinding_Greedy'] = evaluate_baseline("Pathfinding_Greedy", pathfinding_greedy_policy, EVALUATION_SEEDS, NUM_EPISODES)
     
+    # Chạy TQC với cùng list seed
     tqc_model_path = find_latest_model("TQC")
     if tqc_model_path:
         results['TQC'] = evaluate_rl_agent(tqc_model_path, TQC, EVALUATION_SEEDS, NUM_EPISODES)
     else: print("\nKhông tìm thấy model TQC.")
 
+    # Chạy SAC với cùng list seed
     sac_model_path = find_latest_model("SAC")
     if sac_model_path:
         results['SAC'] = evaluate_rl_agent(sac_model_path, SAC, EVALUATION_SEEDS, NUM_EPISODES)
     else: print("\nKhông tìm thấy model SAC.")
 
+    # In bảng tổng kết
     print("\n\n" + "="*80)
     print("--- BẢNG TỔNG KẾT THÍ NGHIỆM CUỐI CÙNG (ĐỒNG BỘ HÓA) ---")
     print("="*80)
     print(f"{'Policy':<25} | {'Avg Reward':<20} | {'Avg Data Collected (%)':<30}")
     print("-" * 80)
+    # Sắp xếp kết quả theo Reward giảm dần
     sorted_results = sorted(results.items(), key=lambda item: item[1][0] if item[1] else -float('inf'), reverse=True)
     for name, result in sorted_results:
         if result:
